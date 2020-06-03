@@ -11,7 +11,7 @@ import "./FundingToken.sol";
 contract Crowdfunding is IERC223Recipient {
     using SafeMath for uint;
     using Roles for Roles.Role;
-    mapping(address => bool) private has_open_projects;
+    mapping(address => bool) public has_open_projects;
     mapping(address => address) public OwnerToProjects;
     mapping(address => Project)public projects;
     Roles.Role private _projectOwners;
@@ -21,7 +21,6 @@ contract Crowdfunding is IERC223Recipient {
     Roles.Role private _owner;
     mapping(address => uint256) public accountBalance;
     uint256 public PricingFee;
-    address[] public projects_addresses;
     FundingToken public Tokens;
     bool public ready_for_projects = false;
     uint256 public commission;
@@ -84,12 +83,20 @@ contract Crowdfunding is IERC223Recipient {
         accountBalance[msg.sender] = accountBalance[msg.sender].sub(ProjectPrice);
         Project p = new Project(msg.sender, address(Tokens));
         OwnerToProjects[msg.sender]=address(p);
-        projects_addresses.push(address(p));
         projects[address(p)] = p;
         openProjects.add(address(p));
         p.setCommission(commission);
         _projectOwners.add(msg.sender);
         has_open_projects[msg.sender]=true;
+    }
+
+    function projectwasDeleted(address _ownercontact)public{
+        require(openProjects.has(msg.sender));
+        openProjects.remove(msg.sender);
+        has_open_projects[_ownercontact]=false;
+        OwnerToProjects[_ownercontact]=address (0);
+        _projectOwners.remove(_ownercontact);
+
     }
 
 
@@ -113,7 +120,7 @@ contract Crowdfunding is IERC223Recipient {
 
     function tokenFallback(address _from, uint _value, bytes calldata _data) override external {
         require(msg.sender == address(Tokens));
-        require(this.hasAccount(_from));
+        require(this.hasAccount(_from)||openProjects.has(_from));
         accountBalance[_from] = accountBalance[_from].add(_value);
         emit BalanceRaised(_from, accountBalance[_from]);
     }

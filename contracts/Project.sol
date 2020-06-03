@@ -11,31 +11,34 @@ contract Project is IERC223Recipient{
 
     //Adds a timeline to the project. It basically describes how long the project is supposed to be on the crowdfunding platform before shipping starts.
     Roles.Role private _owners;
-    address payable owner_contact ;
+    Roles.Role private customer;
+    uint256 private owner_count=0;
+    address payable public owner_contact ;
     uint256 public timeline=0;
     string public status="";
     uint8 public pricing=0;
     string public video="";
     bool public ready=false;
     uint256 public unitsSold=0;
-    uint256 private limit=0;
+    uint256 public limit=0;
     uint256 public unit_price=0;
-    address CFunding;
-    mapping (address=>uint256) boughtunits;
-    address[] private customers;
-    mapping (address => uint256) tokensspent;
-
+    address private CFunding;
+    mapping (address=>uint256) public boughtunits;
+    uint256 public customers;
+    mapping (address => uint256) public  tokensspent;
     uint256 public maxunit_per_purchase=1;
     uint256 public bulk_discount=maxunit_per_purchase;
     uint256 public commission;
     FundingToken public Tokens;
-    uint256 starttime;
-    uint256 endtime;
-    uint256 funded=0;
+    uint256 public starttime;
+    uint256 public endtime;
+    uint256 public funded=0;
+    bool public refund_possible=false;
 
     constructor(address payable _firstowner ,address _token)public {
         _owners.add(_firstowner);
         owner_contact=_firstowner;
+        owner_count=owner_count.add(1);
         CFunding=msg.sender;
         Tokens=FundingToken(_token);
     }
@@ -49,6 +52,8 @@ contract Project is IERC223Recipient{
     function addProjectOwner(address payable _CoOwner)external {
         require(_owners.has(msg.sender));
         _owners.add(_CoOwner);
+        owner_count=owner_count.add(1);
+
 
     }
 
@@ -60,9 +65,11 @@ contract Project is IERC223Recipient{
 
     function renounceOwner(address payable  _Owner)external{
         require(_owners.has(msg.sender));
+        require(_Owner!=owner_contact);
         require(_Owner!=msg.sender);
         _owners.remove(_Owner);
-        owner_contact=msg.sender;
+
+
     }
 
     function setdiscount(uint256 _discount)external {
@@ -75,17 +82,43 @@ contract Project is IERC223Recipient{
         maxunit_per_purchase=_max;
     }
 
-    function unitbought(address _buyer,uint256 _units,uint256 _price)private{
+    function unitbought(address _buyer,uint256 _price,uint256 _units)private{
         unitsSold=unitsSold.add(_units);
+        if(unitsSold>=limit){
+            status="Funded";
+            refund_possible=false;
+        }
         boughtunits[_buyer]=boughtunits[_buyer].add(_units);
         tokensspent[_buyer]=tokensspent[_buyer].add(_price);
-        customers.push(_buyer);
+        if(!customer.has(_buyer)){
+            customer.add(_buyer);
+            customers=customers.add(1);
+        }
     }
 
     //An owner should link their project to a pitch video
     function addVideo(string calldata _video)external onlyOwners{
         video=_video;
 
+    }
+
+    function requestRefundAfterAbort()external{
+        require(keccak256(abi.encodePacked(status))==keccak256(abi.encodePacked("Aborted")));
+       require(customer.has(msg.sender));
+        require(refund_possible);
+         uint stake=tokensspent[msg.sender];
+        Tokens.transfer(msg.sender,stake);
+         tokensspent[msg.sender]=0;
+         boughtunits[msg.sender]=0;
+         funded=funded.sub(stake);
+         if(customers==1){
+             Crowdfunding cf=Crowdfunding(CFunding);
+             cf.projectwasDeleted(owner_contact);
+             selfdestruct(owner_contact);
+         }
+        else{
+             customers=customers.sub(1);
+         }
     }
 
     function getOwnerContact()external returns(address){
@@ -100,7 +133,7 @@ contract Project is IERC223Recipient{
 
     }
 
-    function hasOwner(address _owner)external returns(bool){
+    function hasOwner(address _owner)external view returns(bool){
         return _owners.has(_owner);
     }
 
@@ -120,13 +153,6 @@ contract Project is IERC223Recipient{
 
     }
 
-    function Funded()external onlyOwners{
-        require(ready);
-        require(keccak256(abi.encodePacked(status))==keccak256(abi.encodePacked("Concept")));
-        if(funded>limit){
-            status="Funded";
-        }
-    }
     function inProduction()external onlyOwners{
         require(ready);
         require(keccak256(abi.encodePacked(status))==keccak256(abi.encodePacked("Funded")));
@@ -134,47 +160,53 @@ contract Project is IERC223Recipient{
 
     }
 
-    function statusConecpt()external onlyOwners{
-        require(ready);
+    function statusConcept()external onlyOwners{
         require(keccak256(abi.encodePacked(status))==keccak256(abi.encodePacked("")));
         status="Concept";
 
     }
 
-    function abortProject()external onlyOwners{
+    function abortProject()external onlyOwners {
+        require(ready);
+        status="Aborted";
         if(pricing==0){
             uint prov=funded.div(commission);
             Tokens.transfer(CFunding,prov);
             Tokens.transfer(owner_contact,funded.sub(prov));
+            refund_possible=false;
+
         }
-        else{
-            if(funded<limit){
-                for(uint i=0;i<customers.length;i++){
-                    Tokens.transfer(customers[i],tokensspent[customers[i]]);
-                }
+      else if(funded<limit){
+                refund_possible=true;
             }
-        }
-        selfdestruct(owner_contact);
+            else{
+                refund_possible=false;
+            }
+
+
     }
 
 
 
 
     //An owner can set the price for one unit of the product
-    function addUnitPrice()external{
-        require(_owners.has(tx.origin));
+    function addUnitPrice(uint256 _price)external onlyOwners{
+        unit_price=_price;
+
 
     }
 
     function revertPayment()external{
         Crowdfunding cf=Crowdfunding(CFunding);
         require(cf.hasAccount(msg.sender));
+        require(pricing==1);
         if(unitsSold<limit){
             uint256 spent=tokensspent[msg.sender];
             Tokens.transfer(msg.sender,spent);
             tokensspent[msg.sender]=0;
             unitsSold=unitsSold.sub(boughtunits[msg.sender]);
             boughtunits[msg.sender]=0;
+            funded=funded.sub(spent);
         }
         else{
             revert();
@@ -189,20 +221,21 @@ contract Project is IERC223Recipient{
     //Owners can choose between two different pricing models. One in which there is no limited order number and one where there is. If a limit is set users get their money back
     //as long as order limit has not been reached.
     function chooseLimitlessPricing()external {
-        require(_owners.has(tx.origin));
+        require(_owners.has(msg.sender));
         pricing=0;
     }
 
     function chooseLimitedPricing()external onlyOwners{
         pricing=1;
         Crowdfunding cf=Crowdfunding(CFunding);
+        refund_possible=true;
         cf.changePricing(msg.sender);
 
     }
 
     function projectReady()external onlyOwners{
         require(bytes(video).length>0);
-        require(bytes(status).length>0);
+        require(keccak256(abi.encodePacked(status))==keccak256(abi.encodePacked("Concept")));
         require(timeline>0);
         require(unit_price>0);
         ready=true;
@@ -219,17 +252,15 @@ contract Project is IERC223Recipient{
     function tokenFallback(address _from, uint _value, bytes calldata _data) override external{
         require(msg.sender==address(Tokens));
         require(ready);
+        require(keccak256(abi.encodePacked(status))!=keccak256(abi.encodePacked("Aborted")));
         Crowdfunding cf=Crowdfunding(CFunding);
         uint256 _units=_value.div(unit_price);
         require(_units>0&&_units<=maxunit_per_purchase);
         require(cf.hasAccount(_from));
         if(keccak256(_data)!=keccak256(bytes("fund"))){
-
-
             if(_units>2){
                 unitbought(_from,_value,(_units+bulk_discount));
                 emit UnitsBought(_from,_units+bulk_discount);
-
             }
             else{
                 unitbought(_from,_value,_units);
